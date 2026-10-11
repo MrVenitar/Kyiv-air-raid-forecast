@@ -1,0 +1,55 @@
+{
+  "source": "official",
+  "data_end": "2026-09-07T05:39:33.000000000",
+  "splits": {
+    "train": [
+      "2025-01-01 00:00:00",
+      "2026-07-10 06:00:00"
+    ],
+    "val": [
+      "2026-07-11 06:00:00",
+      "2026-08-08 06:00:00"
+    ],
+    "test": [
+      "2026-08-09 06:00:00",
+      "2026-09-06 06:00:00"
+    ]
+  },
+  "chosen": {
+    "1": {
+      "model": "hgb",
+      "train_start": "2025-01-01",
+      "online_recalibration": true,
+      "features": "+own history"
+    },
+    "3": {
+      "model": "logreg",
+      "train_start": "2025-12-01",
+      "online_recalibration": true,
+      "features": "+Air Force text"
+    },
+    "6": {
+      "model": "hgb",
+      "train_start": "2025-01-01",
+      "online_recalibration": true,
+      "features": "+Air Force text"
+    },
+    "12": {
+      "model": "logreg",
+      "train_start": "2025-12-01",
+      "online_recalibration": true,
+      "features": "+Air Force text"
+    },
+    "24": {
+      "model": "logreg",
+      "train_start": "2025-01-01",
+      "online_recalibration": true,
+      "features": "+Air Force text"
+    }
+  },
+  "notes": [
+    "official: 299271 alerts, levels {'raion': 132247, 'oblast': 130235, 'hromada': 36789}"
+  ],
+  "rows": 353232,
+  "seconds": 451
+}
