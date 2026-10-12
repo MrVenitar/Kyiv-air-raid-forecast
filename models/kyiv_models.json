@@ -1,0 +1,44 @@
+{
+  "onset": {
+    "model": "logreg",
+    "half_life": null,
+    "recalibration": true,
+    "features": "+ alert map",
+    "groups": [
+      "kyiv history",
+      "regional alerts",
+      "af",
+      "alertmap"
+    ],
+    "trained_until": "2026-10-11 16:00:00",
+    "rows": 282280,
+    "recalibration_offsets": {
+      "15": -0.6175575882941797,
+      "30": -0.6483368434365414,
+      "60": -0.6740045030325739,
+      "120": -0.8579812571543692,
+      "180": -0.9525144715337138
+    }
+  },
+  "clear": {
+    "model": "logreg",
+    "half_life": null,
+    "recalibration": true,
+    "features": "+ alert map",
+    "groups": [
+      "kyiv history",
+      "regional alerts",
+      "af",
+      "alertmap"
+    ],
+    "trained_until": "2026-10-11 17:15:00",
+    "rows": 29110,
+    "recalibration_offsets": {
+      "15": 0.7552343429401647,
+      "30": 0.3941034677614268,
+      "60": 0.3269194842562315,
+      "120": 0.5037805086619597,
+      "180": 1.0426661391680117
+    }
+  }
+}

@@ -4,3 +4,9 @@ data/raw/
 __pycache__/
 *.pyc
 .DS_Store
+# third-party Telegram channel texts: rebuild from your own exports with src/tg_export.py (cleaned signals are kept)
+data/tg_alertmap.csv.gz
+data/tg_kmda.csv.gz
+data/tg_monitoring.csv.gz
+data/tg_vanek.csv.gz
+data/kyiv/cache/

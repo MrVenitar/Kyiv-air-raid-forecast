@@ -1,0 +1,12 @@
+{
+  "model": "logreg",
+  "half_life": null,
+  "recalibration": true,
+  "features": "+ alert map",
+  "groups": [
+    "kyiv history",
+    "regional alerts",
+    "af",
+    "alertmap"
+  ]
+}

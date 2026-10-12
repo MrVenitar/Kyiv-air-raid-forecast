@@ -1,4 +1,156 @@
-# Forecasting new air-raid alerts in Ukraine (1–24 h ahead)
+# Air-raid alert forecasting in Ukraine
+
+Two forecasters built in this repository:
+
+1. **Kyiv commuter forecaster (main result).** Every 15 minutes: if no alert is running, the chance that a new
+   Kyiv alert starts within 15, 30, 60, 120 and 180 minutes; if an alert is running, the chance that the
+   all-clear comes within the same windows. Data to 11 Oct 2026, tested on the last three weeks.
+2. **24 places, hourly** (first version, below): the chance of a new alert within 1–24 h in every oblast's
+   main city.
+
+Both use only information published before the moment of the forecast, enforced by tests that are shown to
+catch planted leaks. A forecast must never be used to ignore a real alert.
+
+---
+
+## Part 1 — Kyiv commuters, every 15 minutes
+
+### The two decisions it is built for
+
+| Where | Question | Forecast used |
+|---|---|---|
+| **Arsenalna**, alert running | Wait for the all-clear and cross the Dnipro on the red line, or walk to Zvirynetska / take the bus? | P(all-clear within 15–60 min), and the alert level |
+| **Livoberezhna** (or on the way there from Osokorky / the Paton bridge), no alert | Will I cross the river before an alert closes the surface stations? | P(new alert within 15–30 min) |
+
+City rules that matter (news reports, Sep 2026; check Kyiv Metro for the current ones): during an alert the red
+line runs only underground, Akademmistechko–Arsenalna, and Dnipro, Hidropark, Livoberezhna, Darnytsia,
+Chernihivska and Lisova close. Since 10 Sep, at the **yellow** level (drone danger) the green line still crosses
+the Dnipro on the Southern bridge; at **red** it is split at Vydubychi / Slavutych.
+
+### Data: cleaned for this goal
+
+| Dataset (in `data/kyiv/`) | What it is | How it was checked |
+|---|---|---|
+| `kyiv_alerts.csv` | 2,653 Kyiv alert episodes, Feb 2022 – 12 Oct 2026, with yellow/red levels since 6 Sep 2026 | Built from the KMDA channel's fixed templates by a one-pass state machine. Matches the official channel 99–100 % (starts and all-clears within 5 min, median offset < 0.1 min) for 2022–2025 |
+| `kyiv_levels.csv`, `kmda_alert_posts.csv` | every level change / alert post, with publication time | same |
+| `signals.csv.gz` | 606k timestamped text signals from 4 channels: Kyiv target, Kyiv oblast, toward Kyiv, explosions, ballistic, MiG-31K, strategic aviation, missiles, jet drones, drones, launches, all-clears | rules unit-tested on typical lines; random matched lines in `reports/kyiv/signal_samples.md` |
+| regional alerts | alert **starts** in Kyiv oblast, its neighbours and the country (volunteer data; end times not used) | — |
+
+Why KMDA: the official alert channel went silent on 7 Sep 2026, a day after Kyiv switched to yellow/red levels,
+and it had already stopped carrying many Kyiv alerts from 24 Aug (KMDA: ~50 alerts/week; official: 32, then
+22). The volunteer series captures only 157 of the 242 Kyiv alerts after the switch. Details:
+`reports/kyiv/cleaning.md`.
+
+**The regime changed.** Kyiv had 14–17 alerts a week until mid-August 2026 and ~50 a week since 24 Aug; in
+recent weeks the city was under alert 450–830 minutes a day.
+
+### Results (test: 21 Sep – 11 Oct 2026, run once)
+
+Weekly rolling origin: every Monday the model is refitted on everything known before that week, then forecasts
+the week every 15 minutes. All choices (model type, recency weighting, recalibration, which channels) were made
+on the 4 validation weeks (24 Aug – 20 Sep) and frozen before the test run. The baseline uses Kyiv's alert history only:
+for a new alert, the share of the last 28 days on which one followed the same time of day; for the all-clear, the
+share of recent alerts that ended within h minutes once they had lasted as long as this one.
+
+![Skill](reports/kyiv/skill.png)
+
+| Horizon | New alert: observed rate | Brier skill | AUC model / baseline | All-clear: observed rate | Brier skill | AUC model / baseline |
+|---|---|---|---|---|---|---|
+| 15 min | 13 % | **+0.08** | 0.71 / 0.49 | 19 % | **+0.14** | 0.76 / 0.55 |
+| 30 min | 26 % | **+0.09** | 0.67 / 0.49 | 33 % | **+0.18** | 0.75 / 0.55 |
+| 60 min | 44 % | +0.06 | 0.63 / 0.50 | 53 % | **+0.17** | 0.75 / 0.57 |
+| 120 min | 66 % | +0.07 | 0.62 / 0.46 | 74 % | +0.05 | 0.71 / 0.57 |
+| 180 min | 78 % | +0.09 | 0.62 / 0.45 | 84 % | +0.06 | 0.76 / 0.56 |
+
+What the probabilities mean in practice (same test predictions, grouped by the forecast; table added after the
+test run, the model is unchanged):
+
+| Forecast band | Livoberezhna: share of moments | ...an alert started within 30 min | Arsenalna: share of moments | ...the all-clear came within 30 min |
+|---|---|---|---|---|
+| < 10 % | 17 % | 13 % | 19 % | 13 % |
+| 10–20 % | 23 % | 17 % | 25 % | 17 % |
+| 20–30 % | 21 % | 21 % | 18 % | 32 % |
+| 30–50 % | 26 % | 35 % | 19 % | 42 % |
+| ≥ 50 % | 12 % | 48 % | 19 % | 68 % |
+
+The baseline cannot separate moments like this: its bands all sit at 20–31 % (new alert) and 18–36 % (all-clear).
+
+* **Arsenalna:** "wait if P(all-clear within 30 min) ≥ 50 %" is the right call 74 % of the time (baseline 65 %).
+  Red-level alerts were only 41 test moments (90 % right vs 68 %); too few to rely on.
+* **Livoberezhna:** a "≤ 10 % / ≤ 20 % chance of being caught" rule tuned on the calmer validation weeks did
+  **not** hold on test (16 % and 26 % caught): absolute risk levels move from week to week. Read the forecast as a
+  risk level, not a guarantee.
+* **Which sources help** (validation, mean log-loss over horizons, lower is better; baseline 0.602 / 0.565):
+
+  | Features added in turn | New alert | All-clear |
+  |---|---|---|
+  | Kyiv alert history only | 0.550 | 0.596 |
+  | + regional alerts (volunteer starts) | 0.547 | 0.551 |
+  | + Air Force channel | 0.517 | 0.556 |
+  | + alert-map channel | **0.484** | **0.545** |
+  | + Monitoring UA | 0.492 | 0.571 |
+  | + Mykolaiv Vanek | 0.497 | 0.598 |
+
+  The volunteer monitoring channels added nothing on top of the Air Force and alert-map channels, so the final
+  models do not use them (measured, not assumed).
+* Logistic regression beat boosted trees in both tasks: trees cannot extrapolate to the escalation weeks.
+
+![Replay](reports/kyiv/replay.png)
+
+![Reliability](reports/kyiv/reliability.png)
+
+### Use it
+
+```bash
+python kyiv/forecast.py --at "2026-10-10 08:15"     # Kyiv local time; only data published before it is used
+python kyiv/forecast.py                             # at the end of the data (11 Oct 2026, 20:15)
+```
+
+```
+Kyiv, 2026-10-11 20:15 (Kyiv time). Data used: published before this moment only.
+ALERT RUNNING for 66 min, level: yellow (drone danger).
+Chance the all-clear comes within ...
+            forecast  baseline
+   15 min       45%       21%
+   30 min       71%       32%
+   60 min       90%       54%
+```
+
+(The all-clear came at 20:18.) Trained models are in `models/`; to forecast later dates, export fresh Telegram
+channels, rebuild the datasets (below) and retrain.
+
+### Train it yourself (here or in Google Colab)
+
+`kyiv/colab_train.ipynb` runs everything on a free CPU runtime (~1 h). The same steps from a shell:
+
+```bash
+pip install -r requirements.txt
+bash scripts/get_data.sh                                  # regional alert history (pinned snapshot)
+python kyiv/test_kyiv_leakage.py                          # streaming-vs-batch + planted leak
+python kyiv/train.py --stage tables
+python kyiv/train.py --stage validate --task onset        # choices are made here
+python kyiv/train.py --stage validate --task clear
+python kyiv/train.py --stage test                         # once
+python kyiv/train.py --stage final && python kyiv/report.py
+```
+
+Rebuilding the datasets from your own Telegram exports (Telegram Desktop -> Export chat history -> HTML):
+`python src/tg_export.py <folder> data/tg_<name>.csv.gz` for `kmda`, `alertmap`, `monitoring`, `vanek`
+(and `kpszsu` for the Air Force), then `python kyiv/clean_alerts.py` and `python kyiv/signals.py`.
+
+### Limitations (Kyiv)
+
+* **Three test weeks**, all in the new two-level regime; red-level alerts are rare in them.
+* **Telegram edits are invisible** in exports: a message counts with its final text from its publication time.
+* **Text signals are keyword rules.** "Toward Kyiv" still fires for some drones leaving via Chornobyl/Dymer
+  toward Zhytomyr oblast; news lines that mention Kyiv can slip in.
+* **Regional alerts after 7 Sep exist only in the volunteer data**, and only their start times are used.
+* **Recalibration offsets** in `models/` were measured on the last week of data; for later dates, retrain.
+* The KMDA all-clear is citywide; the Southern-bridge and metro rules can change, so check them.
+
+---
+
+## Part 2 — 24 places, hourly (first version)
 
 Every hour, for 24 places (Kyiv City and the main city of every other oblast except Luhansk), the model
 gives the probability that a **new air-raid alert starts** there within the next **1, 3, 6, 12 and 24 hours**.
@@ -14,7 +166,7 @@ Two pipelines share all code and differ only in the alert source:
 | Test (last 4 weeks, used once) | 12 Sep – 10 Oct 2026 | 9 Aug – 6 Sep 2026 |
 | Validation (all choices) | 14 Aug – 11 Sep 2026 | 11 Jul – 8 Aug 2026 |
 
-## Why this target
+### Why this target
 
 Forecasts are for decisions, so the target came from who would use them:
 
@@ -32,7 +184,7 @@ of Kharkiv oblast was under alert 93 % of the time. Each user trades false alarm
 the output is a **calibrated probability**, evaluated with Brier score, log-loss and reliability, plus an
 operational table with false-warning caps. A forecast must never be used to ignore a real alert.
 
-## Results
+### Results
 
 Brier skill is relative to a strong, honest baseline: the share of the last 28 days on which an alert onset
 followed the same local hour at the same place. 0 = as good as the baseline; higher is better.
@@ -86,7 +238,7 @@ At long horizons thresholds tuned on one month do not hold in the next one (24 h
 against a cap of 1). On volunteer data the model and baseline warn about the same share of onsets. All rows:
 `reports/*/operational.csv`.
 
-## Method
+### Method
 
 * **Label** for horizon H at hour t: a new alert episode starts at the place in [t, t+H). Alerts overlapping
   at a place are merged into episodes; an onset is an episode start.
@@ -116,7 +268,7 @@ against a cap of 1). On volunteer data the model and baseline warn about the sam
 * **Time zones:** the alert data is in UTC; Telegram exports show the Kyiv wall clock and were localised as
   Europe/Kyiv. This was verified against the clock printed inside 99 % of alert messages.
 
-## Limitations
+### Limitations
 
 * **No official alerts after 7 Sep 2026.** The latest period is evaluated on volunteer data only.
 * **The volunteer data is not ground truth.**
@@ -130,11 +282,11 @@ against a cap of 1). On volunteer data the model and baseline warn about the sam
 * The Air Force text features are keyword counts, not language understanding. Place names outside the
   dictionary (small villages) are missed.
 
-## Reproduce
+### Reproduce
 
 ```bash
 pip install -r requirements.txt
-bash scripts/run_all.sh          # data (pinned snapshot), leakage tests, both pipelines, figures (~15 min, 2 CPUs)
+bash scripts/run_all.sh          # 11 Oct data snapshot, leakage tests, both pipelines, figures (~15 min, 2 CPUs)
 python src/audit.py              # the data checks that changed the plan
 ```
 
@@ -142,9 +294,16 @@ The parsed Air Force channel is included (`data/tg_kpszsu.csv.gz`, 84,925 messag
 To rebuild it from a Telegram Desktop HTML export: `python src/tg_export.py <export folder> data/tg_kpszsu.csv.gz`.
 The alert data is cloned by `scripts/get_data.sh` (pinned commit; `latest` for today's).
 
-## Layout
+### Layout
 
 ```
+kyiv/clean_alerts.py   KMDA posts -> Kyiv alert episodes (+ levels), validated against official / volunteer
+kyiv/signals.py        4 Telegram channels -> timestamped Kyiv-relevant signals
+kyiv/features.py       15-min features from event lists; onset and all-clear labels; baselines
+kyiv/train.py          weekly rolling origin; validation choices; one test run; final models
+kyiv/forecast.py       forecast at any moment;  kyiv/report.py  figures
+kyiv/test_kyiv_leakage.py, kyiv/colab_train.ipynb
+models/                trained Kyiv models;  reports/kyiv/  cleaning, signals, validation, test
 src/data.py         alert sources -> per-place episodes (main-city mapping, neighbours)
 src/features.py     features known at t, labels, recent rates, online recalibration
 src/run.py          splits, baselines, model choice on validation, ablation, operational table
