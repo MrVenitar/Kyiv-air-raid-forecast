@@ -101,9 +101,33 @@ The baseline cannot separate moments like this: its bands all sit at 20–31 % (
 
 ### Use it
 
+**Right now (live):** in Google Colab (works on any computer; Windows security policies can block numpy locally):
+
+```python
+!git clone https://github.com/MrVenitar/Kyiv-air-raid-forecast.git
+%cd Kyiv-air-raid-forecast
+!pip -q install -r requirements.txt
+!git clone -q https://github.com/Vadimkin/ukrainian-air-raid-sirens-dataset.git data/sirens
+!python kyiv/live.py
+```
+
+`kyiv/live.py` reads the newest posts from the channels' public web pages (no login, no token):
+KMDA `t.me/s/KyivCityOfficial` (alerts and levels), Air Force `t.me/s/kpszsu`, alert map `t.me/s/povitryanatrivogaaa`,
+and eTryvoga `t.me/s/UkraineAlarmSignal` for regional alerts, parsed with the alert dataset's own rules and continued
+from its last processed message. It pages back until it meets the stored data, so the history has no gap (if the
+KMDA history cannot be reached it stops instead of guessing). Run it again for a fresh forecast; nothing is saved.
+
+If the regional page cannot be read, it falls back to `models/kyiv_*_live.json`: the new-alert model without regional
+features (almost as good: test log-loss 0.569 vs 0.564, baseline 0.597) and, for the all-clear, the duration
+baseline, because without regional alerts the all-clear model is worse than the baseline on validation (0.592 vs
+0.565). Details: `reports/kyiv/live_variant.md`. The live code is tested offline on simulated pages
+(`kyiv/test_live.py`); the real pages are read only on your machine or in Colab.
+
+**At any past moment covered by the data:**
+
 ```bash
 python kyiv/forecast.py --at "2026-10-10 08:15"     # Kyiv local time; only data published before it is used
-python kyiv/forecast.py                             # at the end of the data (11 Oct 2026, 20:15)
+python kyiv/forecast.py                             # at the end of the stored data (11 Oct 2026, 20:15)
 ```
 
 ```
@@ -116,8 +140,8 @@ Chance the all-clear comes within ...
    60 min       90%       54%
 ```
 
-(The all-clear came at 20:18.) Trained models are in `models/`; to forecast later dates, export fresh Telegram
-channels, rebuild the datasets (below) and retrain.
+(The all-clear came at 20:17–20:18 by both KMDA and the alerts.in.ua app.) Models are stored as plain JSON
+(`models/*.json`, numpy-only prediction, identical to scikit-learn to 1e-16), so they load with any library version.
 
 ### Train it yourself (here or in Google Colab)
 
@@ -132,6 +156,8 @@ python kyiv/train.py --stage validate --task onset        # choices are made her
 python kyiv/train.py --stage validate --task clear
 python kyiv/train.py --stage test                         # once
 python kyiv/train.py --stage final && python kyiv/report.py
+python kyiv/train.py --stage live                         # models without regional alerts (live fallback)
+python kyiv/test_live.py                                  # live mode, offline on simulated Telegram pages
 ```
 
 Rebuilding the datasets from your own Telegram exports (Telegram Desktop -> Export chat history -> HTML):
@@ -145,7 +171,11 @@ Rebuilding the datasets from your own Telegram exports (Telegram Desktop -> Expo
 * **Text signals are keyword rules.** "Toward Kyiv" still fires for some drones leaving via Chornobyl/Dymer
   toward Zhytomyr oblast; news lines that mention Kyiv can slip in.
 * **Regional alerts after 7 Sep exist only in the volunteer data**, and only their start times are used.
-* **Recalibration offsets** in `models/` were measured on the last week of data; for later dates, retrain.
+* **Recalibration offsets** in `models/` were measured on the last week of data (to 11 Oct); for later dates,
+  retrain with fresh exports. The live mode uses them as they are.
+* **"⚠ Київ / 🏍 … над містом!"**: the Air Force often names the city on its own line and the threat on the next;
+  the line-by-line rules miss that (same in training and live use). Found by the live-mode test; fixing it means
+  rebuilding the signals and re-running validation and test.
 * The KMDA all-clear is citywide; the Southern-bridge and metro rules can change, so check them.
 
 ---
@@ -301,8 +331,8 @@ kyiv/clean_alerts.py   KMDA posts -> Kyiv alert episodes (+ levels), validated a
 kyiv/signals.py        4 Telegram channels -> timestamped Kyiv-relevant signals
 kyiv/features.py       15-min features from event lists; onset and all-clear labels; baselines
 kyiv/train.py          weekly rolling origin; validation choices; one test run; final models
-kyiv/forecast.py       forecast at any moment;  kyiv/report.py  figures
-kyiv/test_kyiv_leakage.py, kyiv/colab_train.ipynb
+kyiv/forecast.py       forecast at any moment;  kyiv/live.py  forecast right now;  kyiv/report.py  figures
+kyiv/test_kyiv_leakage.py, kyiv/test_live.py, kyiv/colab_train.ipynb, kyiv/model_utils.py (numpy predictor)
 models/                trained Kyiv models;  reports/kyiv/  cleaning, signals, validation, test
 src/data.py         alert sources -> per-place episodes (main-city mapping, neighbours)
 src/features.py     features known at t, labels, recent rates, online recalibration

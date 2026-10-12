@@ -4,6 +4,7 @@
     python kyiv/train.py --stage validate   # model + feature choices on the validation weeks
     python kyiv/train.py --stage test       # run ONCE: frozen choices on the test weeks + scenarios
     python kyiv/train.py --stage final      # fit on all data, save models/ for kyiv/forecast.py
+    python kyiv/train.py --stage live       # same without regional alerts (for kyiv/live.py), evaluated first
 
 Evaluation = weekly rolling origin: for every week (starting Monday 00:00 Kyiv), models are fitted on all rows
 whose label window ended before the week started, then predict that week every 15 minutes.
@@ -303,41 +304,100 @@ def stage_test(tasks=TASKS):
     log("\n".join(lines))
 
 
-def stage_final():
+LIVE_DROP = "regional alerts"     # regional alert history is published once a day: not available live
+
+
+def fit_final(tab, meta, c, groups, task):
+    """Fit on every row whose label finished before the end of the data; recalibration offsets from an
+    out-of-sample week (model fitted 7 days before the end of the data, scored on that last week)."""
+    origin = pd.Timestamp(meta["label_end"])
+    tr = train_rows(tab, origin)
+    m, cols = fit(c["model"], c["half_life"], tr, task, groups, origin)
+    deltas = {}
+    if c["recalibration"]:
+        ctx_origin = pd.Timestamp(meta["feature_end"]).floor("15min") - pd.Timedelta("7D")
+        m_ctx, _ = fit(c["model"], c["half_life"], train_rows(tab, ctx_origin), task, groups, ctx_origin)
+        ctx = tab[(tab.t >= ctx_origin) & (tab.t + pd.to_timedelta(tab.h, unit="min") <= origin)].copy()
+        ctx["p"] = predict(m_ctx, ctx, task, groups)
+        for h, g in ctx.groupby("h"):
+            deltas[int(h)] = float(_logit((g.y.sum() + 0.5) / (len(g) + 1)) - _logit((g.p.sum() + 0.5) / (len(g) + 1)))
+    return m, cols, deltas, tr
+
+
+def save_model(name, task, c, groups, m, cols, deltas, tr):
+    """joblib (scikit-learn object) + JSON (plain numbers, loads with any library version)."""
     import joblib
+    from model_utils import export_logreg
+    meta = {"task": task, "choice": c, "groups": groups, "deltas": deltas,
+            "trained_until": str(tr.t.max()), "rows": len(tr)}
+    joblib.dump({"model": m, "columns": cols, **meta}, MODELS / f"{name}.joblib")
+    if c["model"] == "logreg":
+        json.dump({**export_logreg(m, cols), **meta}, open(MODELS / f"{name}.json", "w"))
+
+
+def stage_final():
     choice = {t: json.load(open(REP / f"choice_{t}.json")) for t in TASKS}
     MODELS.mkdir(parents=True, exist_ok=True)
     info = {}
     for task in TASKS:
         tab, meta = load_table(task)
         c = choice[task]
-        origin = pd.Timestamp(meta["label_end"])
-        tr = train_rows(tab, origin)
         if c["model"] == "baseline":
-            joblib.dump({"model": None, "columns": [], "groups": [], "task": task, "choice": c, "deltas": {},
-                         "trained_until": str(tr.t.max()), "rows": 0}, MODELS / f"kyiv_{task}.joblib")
-            info[task] = {**c, "trained_until": str(tr.t.max()), "rows": 0}
+            json.dump({"type": "baseline", "task": task, "choice": c, "deltas": {}}, open(MODELS / f"kyiv_{task}.json", "w"))
+            info[task] = c
             log(f"[final] {task}: baseline only (validation found no model better than it)")
             continue
-        m, cols = fit(c["model"], c["half_life"], tr, task, c["groups"], origin)
-        deltas = {}
-        if c["recalibration"]:          # offsets for live use: out-of-sample over the last 7 days of data
-            ctx_origin = pd.Timestamp(meta["feature_end"]).floor("15min") - pd.Timedelta("7D")
-            m_ctx, _ = fit(c["model"], c["half_life"], train_rows(tab, ctx_origin), task, c["groups"], ctx_origin)
-            ctx = tab[(tab.t >= ctx_origin) & (tab.t + pd.to_timedelta(tab.h, unit="min") <= origin)].copy()
-            ctx["p"] = predict(m_ctx, ctx, task, c["groups"])
-            for h, g in ctx.groupby("h"):
-                deltas[int(h)] = float(_logit((g.y.sum() + 0.5) / (len(g) + 1)) - _logit((g.p.sum() + 0.5) / (len(g) + 1)))
-        joblib.dump({"model": m, "columns": cols, "groups": c["groups"], "task": task, "choice": c, "deltas": deltas,
-                     "trained_until": str(tr.t.max()), "rows": len(tr)}, MODELS / f"kyiv_{task}.joblib")
+        m, cols, deltas, tr = fit_final(tab, meta, c, c["groups"], task)
+        save_model(f"kyiv_{task}", task, c, c["groups"], m, cols, deltas, tr)
         info[task] = {**c, "trained_until": str(tr.t.max()), "rows": len(tr), "recalibration_offsets": deltas}
-        log(f"[final] {task}: {c['model']} on {len(tr):,} rows until {tr.t.max()}, offsets {deltas} -> models/kyiv_{task}.joblib")
+        log(f"[final] {task}: {c['model']} on {len(tr):,} rows until {tr.t.max()}, offsets "
+            f"{ {h: round(d, 3) for h, d in deltas.items()} } -> models/kyiv_{task}.json")
     json.dump(info, open(MODELS / "kyiv_models.json", "w"), indent=2)
+
+
+def stage_live():
+    """Live variant = the frozen choices without regional alert features. Evaluated on the same validation
+    and test weeks (for information; nothing is re-chosen), then fitted on all data -> models/kyiv_*_live.json."""
+    choice = {t: json.load(open(REP / f"choice_{t}.json")) for t in TASKS}
+    MODELS.mkdir(parents=True, exist_ok=True)
+    lines = ["# Live variant: the chosen models without regional alert features\n",
+             "Regional alert history (Kyiv oblast, neighbours, country) is published once a day, so a forecast for the",
+             "current minute cannot use it. Same model type, recency weighting and recalibration as the frozen choice.\n"]
+    for task in TASKS:
+        tab, meta = load_table(task)
+        c = choice[task]
+        groups = [g for g in c["groups"] if g != LIVE_DROP]
+        col = "p_recal" if c["recalibration"] else "p_raw"
+        rows = []
+        for period, weeks, end in (("validation 24 Aug – 20 Sep", VAL_WEEKS, VAL_WEEKS[-1] + pd.Timedelta("7D")),
+                                   ("test 21 Sep – 11 Oct", TEST_WEEKS, meta["feature_end"])):
+            for label, gr in (("chosen (with regional alerts)", c["groups"]), ("live (no regional alerts)", groups)):
+                pr = with_recal(tab, task, weeks, c["model"], c["half_life"], gr, end)
+                pr["p"] = pr[col]
+                s, b = scores(pr), scores(pr, "base")
+                rows.append({"period": period, "model": label, "mean log-loss": s.logloss.mean(),
+                             "baseline log-loss": b.logloss.mean(),
+                             **{f"skill {h} min": 1 - x / y for h, x, y in zip(s.h, s.brier, b.brier)}})
+                log(f"[live] {task} {period} {label}: {s.logloss.mean():.4f} (baseline {b.logloss.mean():.4f})")
+        lines.append(f"\n## {task}\n\n" + pd.DataFrame(rows).round(3).to_markdown(index=False))
+        val_live = [r for r in rows if r["period"].startswith("validation") and r["model"].startswith("live")][0]
+        if val_live["mean log-loss"] >= val_live["baseline log-loss"]:      # same rule as the main choice
+            json.dump({"type": "baseline", "task": task, "choice": {"model": "baseline", "features": "baseline only"},
+                       "groups": [], "deltas": {}}, open(MODELS / f"kyiv_{task}_live.json", "w"))
+            lines.append(f"\nWithout regional alerts the {task} model loses to the baseline on validation, so the live "
+                         f"{task} forecast is the baseline.")
+            log(f"[live] {task}: live model worse than the baseline on validation -> baseline saved as models/kyiv_{task}_live.json")
+            continue
+        m, cols, deltas, tr = fit_final(tab, meta, c, groups, task)
+        save_model(f"kyiv_{task}_live", task, c, groups, m, cols, deltas, tr)
+        log(f"[live] {task}: saved models/kyiv_{task}_live.json ({len(cols)} inputs)")
+    (REP / "live_variant.md").write_text("\n".join(lines), encoding="utf-8")
+    log("\n".join(lines))
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--stage", choices=["tables", "validate", "test", "final"], required=True)
+    ap.add_argument("--stage", choices=["tables", "validate", "test", "final", "live"], required=True)
     ap.add_argument("--task", choices=list(TASKS), default=None, help="validate/test one task only (to run both in parallel)")
     a = ap.parse_args()
     if a.stage == "validate":
@@ -345,4 +405,4 @@ if __name__ == "__main__":
     elif a.stage == "test":
         stage_test([a.task] if a.task else TASKS)
     else:
-        {"tables": build_tables, "test": stage_test, "final": stage_final}[a.stage]()
+        {"tables": build_tables, "test": stage_test, "final": stage_final, "live": stage_live}[a.stage]()
